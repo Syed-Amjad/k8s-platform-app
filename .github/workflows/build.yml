@@ -1,0 +1,84 @@
+name: build-and-publish
+
+# The GitOps half of the loop. CI never touches the cluster — it publishes an
+# image and writes a new tag into the GitOps repo. ArgoCD does the rest.
+#
+# That separation is the security argument for two repos: a compromised
+# application pipeline can push a bad image, but it cannot rewrite cluster
+# configuration, because it has no cluster credentials to steal.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "api/**"
+      - "web/**"
+      - ".github/workflows/build.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        service: [api, web]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: ./${{ matrix.service }}
+          push: true
+          # Tagged with the commit SHA, never :latest. A mutable tag means you
+          # cannot tell which code is running, and Project 2's signature
+          # verification pins the digest anyway.
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/${{ matrix.service }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  bump-gitops:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      # A fine-grained PAT with contents:write on the GitOps repo ONLY.
+      # GITHUB_TOKEN cannot reach another repository, which is the point.
+      - name: Update the image tag in the GitOps repo
+        env:
+          GITOPS_TOKEN: ${{ secrets.GITOPS_TOKEN }}
+          GITOPS_REPO: ${{ vars.GITOPS_REPO }} # e.g. Syed-Amjad/platform-gitops
+        run: |
+          set -euo pipefail
+          git clone --depth 1 \
+            "https://x-access-token:${GITOPS_TOKEN}@github.com/${GITOPS_REPO}.git" gitops
+          cd gitops
+
+          # Only the canary (v2) tag moves automatically. v1 is the stable
+          # version and is promoted deliberately, by a human, in git —
+          # see docs/RUNBOOK-canary.md.
+          sed -i "s|^  tag: .*|  tag: ${GITHUB_SHA}|" overlays/prod/values-api-v2.yaml
+          sed -i "s|^  tag: .*|  tag: ${GITHUB_SHA}|" overlays/prod/values-web.yaml
+
+          if git diff --quiet; then
+            echo "No tag change — nothing to commit."
+            exit 0
+          fi
+
+          git config user.name  "ci-bot"
+          git config user.email "ci-bot@users.noreply.github.com"
+          git commit -am "chore: publish ${GITHUB_SHA}"
+          git push
