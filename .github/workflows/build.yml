@@ -31,6 +31,29 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # ---------------------------------------------------------------------
+      # REQUIRED BY THE CACHE LINES BELOW, and its absence is not obvious.
+      #
+      # Without this step, build-push-action uses Docker's DEFAULT builder,
+      # which runs the `docker` driver. That driver cannot export a build
+      # cache, so `cache-to: type=gha` fails the job with:
+      #
+      #   ERROR: Cache export is not supported for the docker driver.
+      #   Switch to a different driver, or turn on the containerd image
+      #   store, and try again.
+      #
+      # GitHub truncates that to "buildx failed with: Learn more at
+      # https://docs.docker.com/go/build-cache-backends/", which points at
+      # cache documentation and reads like a caching problem rather than a
+      # missing builder. Both matrix legs fail identically, which is the clue
+      # that it is configuration and not code.
+      #
+      # setup-buildx-action creates a `docker-container` driver builder, which
+      # supports cache export — and ships a buildx recent enough for the
+      # current GitHub Actions cache API.
+      # ---------------------------------------------------------------------
+      - uses: docker/setup-buildx-action@v3
+
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io
