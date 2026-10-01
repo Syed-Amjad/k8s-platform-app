@@ -60,6 +60,27 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # ---------------------------------------------------------------------
+      # Docker repository names MUST be lowercase, and `github.repository_owner`
+      # returns the owner with its real capitalisation — here `Syed-Amjad`.
+      # Interpolating it straight into a tag fails the build outright:
+      #
+      #   ERROR: failed to build: invalid tag
+      #   "ghcr.io/Syed-Amjad/api:<sha>": repository name must be lowercase
+      #
+      # Note that buildx REFUSES rather than silently lowercasing. That matters,
+      # because the manifests in platform-gitops/overlays/ hardcode
+      # `ghcr.io/syed-amjad/...` — if this step ever published under a different
+      # spelling, the kubelet would ask for a path that was never pushed and the
+      # failure would surface much later, as an ImagePullBackOff at wave 3.
+      #
+      # GitHub Actions expressions have no lowercase function, so it is done in
+      # bash: ${VAR,,} lowercases the whole string.
+      # ---------------------------------------------------------------------
+      - name: Lowercase the registry owner
+        id: repo
+        run: echo "owner=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
+
       - name: Build and push
         id: build
         uses: docker/build-push-action@v6
@@ -70,7 +91,7 @@ jobs:
           # cannot tell which code is running, and Project 2's signature
           # verification pins the digest anyway.
           tags: |
-            ghcr.io/${{ github.repository_owner }}/${{ matrix.service }}:${{ github.sha }}
+            ghcr.io/${{ steps.repo.outputs.owner }}/${{ matrix.service }}:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
